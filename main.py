@@ -16,11 +16,11 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 # ==== Sozlamalar ====
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Bot Token from environment variable
-CHANNEL_ID = os.getenv("CHANNEL_ID")  # Channel ID from environment variable
-BOOST_LINK = os.getenv("BOOST_LINK")  # Boost link from environment variable
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS").split(",")))  # Admin IDs from environment variable (comma-separated)
-DB = os.getenv("DB")  # Database filename from environment variable
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Get from environment variable
+CHANNEL_ID = os.getenv("CHANNEL_ID")  # Get from environment variable
+BOOST_LINK = os.getenv("BOOST_LINK")  # Get from environment variable
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS").split(",")))  # Get admin IDs from environment variable
+DB = os.getenv("DB")  # Get database name from environment variable
 
 USERNAME_REGEX = re.compile(r'^@[A-Za-z0-9_]{5,}$')
 
@@ -65,11 +65,13 @@ DEFAULT_CHANNEL_TEMPLATE = """📢 #{num} — Yangi ishtirokchi!
 🔗 Boost linki: {boost_link}
 """
 
+# === NEW: Statistics text ===
 STATISTICS_REPLY = """Username Battle Statistika:
 👥 Umumiy foydalanuvchilar: <b>{total}</b>
 🆕 Bugun qo‘shilganlar: <b>{today}</b>
 """
 
+# === DATABASE INIT ===
 async def init_db():
     async with aiosqlite.connect(DB) as db:
         await db.execute("""
@@ -122,6 +124,7 @@ async def register_user(tg_id: int, username: str):
             row2 = await cur2.fetchone()
             return row2[0] if row2 else None
 
+# === NEW: Statistics functions ===
 async def get_statistics():
     async with aiosqlite.connect(DB) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
@@ -131,16 +134,18 @@ async def get_statistics():
             today = (await cur2.fetchone())[0]
     return total, today
 
+# === Admin modes flags ===
 admin_template_mode = {}
 admin_force_channel_mode = {}
 admin_delete_channel_mode = {}
 
+# === KEYBOARDS ===
 def admin_keyboard():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(KeyboardButton("🚀 Start Battle"), KeyboardButton("⏸ Stop Battle"))
     kb.add(KeyboardButton("📝 Set Template"))
     kb.add(KeyboardButton("📢 Obunalar"))
-    kb.add(KeyboardButton("📊 Statistika"))
+    kb.add(KeyboardButton("📊 Statistika"))  # Add stats button
     return kb
 
 def subscriptions_keyboard():
@@ -149,6 +154,7 @@ def subscriptions_keyboard():
     kb.add(KeyboardButton("⬅ Orqaga"))
     return kb
 
+# === COMMANDS ===
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
@@ -157,13 +163,181 @@ async def cmd_start(message: types.Message):
         text = WELCOME_TEXT.format(name=quote_html(message.from_user.first_name or "👤"))
         await message.reply(text, parse_mode=ParseMode.HTML)
 
-@dp.message_handler(commands=["stat"]) 
+@dp.message_handler(commands=["stat"])  # Public command
 async def user_statistics(message: types.Message):
     total, today = await get_statistics()
     await message.reply(STATISTICS_REPLY.format(total=total, today=today), parse_mode=ParseMode.HTML)
 
-# other handlers...
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS and m.text == "📊 Statistika")
+async def admin_statistics(message: types.Message):
+    total, today = await get_statistics()
+    await message.reply(STATISTICS_REPLY.format(total=total, today=today), parse_mode=ParseMode.HTML)
 
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS and m.text == "📢 Obunalar")
+async def show_subscriptions_menu(message: types.Message):
+    await message.reply("📢 Obunalar bo‘limi:", reply_markup=subscriptions_keyboard())
+
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS and m.text == "⬅ Orqaga")
+async def back_to_main_menu(message: types.Message):
+    admin_force_channel_mode[message.from_user.id] = False
+    admin_delete_channel_mode[message.from_user.id] = False
+    admin_template_mode[message.from_user.id] = False
+    await message.reply("🔙 Asosiy menyu:", reply_markup=admin_keyboard())
+
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS and m.text == "🚀 Start Battle")
+async def start_battle(message: types.Message):
+    await set_setting("battle_status", "on")
+    await message.reply("✅ Battle boshlandi!")
+
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS and m.text == "⏸ Stop Battle")
+async def stop_battle(message: types.Message):
+    await set_setting("battle_status", "off")
+    await message.reply("⏸ Battle to‘xtatildi!")
+
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS and m.text == "📝 Set Template")
+async def ask_template(message: types.Message):
+    admin_template_mode[message.from_user.id] = True
+    admin_force_channel_mode[message.from_user.id] = False
+    admin_delete_channel_mode[message.from_user.id] = False
+    await message.reply(
+        "📝 Yangi kanal xabar shablonini yuboring.\n\n"
+        "Parametrlar: {num}, {username}, {stars}, {reaction}, {boost}, {boost_link}\n\n"
+        "Masalan:\n📢 #{num} — Yangi ishtirokchi!\n👤 Foydalanuvchi: {username}"
+    )
+
+# === NEW: Kanal qo‘shish ===
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS and m.text == "➕ Kanal qo‘shish")
+async def ask_add_channel(message: types.Message):
+    admin_force_channel_mode[message.from_user.id] = True
+    admin_delete_channel_mode[message.from_user.id] = False
+    admin_template_mode[message.from_user.id] = False
+    await message.reply("➕ Yangi kanal username yoki ID yuboring (bitta xabar = bitta kanal). Yuborishni tugatgach, 'Orqaga' tugmasini bosing.")
+
+# === NEW: Kanal o‘chirish ===
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS and m.text == "➖ Kanal o‘chirish")
+async def ask_delete_channel(message: types.Message):
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute("SELECT id, channel_name FROM force_channels") as cur:
+            rows = await cur.fetchall()
+    if not rows:
+        await message.reply("📭 Hech qanday kanal mavjud emas.")
+        return
+
+    text = "📃 Kanallar ro‘yxati:\n\n"
+    for r in rows:
+        text += f"{r[0]}. {r[1]}\n"
+    text += "\n❓ Qaysi birini o‘chirmoqchisiz? Raqamini yuboring."
+    admin_delete_channel_mode[message.from_user.id] = True
+    admin_force_channel_mode[message.from_user.id] = False
+    admin_template_mode[message.from_user.id] = False
+    await message.reply(text)
+
+# === HANDLE ADMIN INPUTS ===
+@dp.message_handler(lambda m: m.from_user.id in ADMIN_IDS)
+async def admin_message_handler(message: types.Message):
+    admin_id = message.from_user.id
+    text = message.text.strip()
+
+    if admin_template_mode.get(admin_id):
+        await set_setting("template", text)
+        admin_template_mode[admin_id] = False
+        await message.reply("✅ Shablon yangilandi!")
+
+    elif admin_force_channel_mode.get(admin_id):
+        async with aiosqlite.connect(DB) as db:
+            await db.execute("INSERT INTO force_channels (channel_name) VALUES (?)", (text,))
+            await db.commit()
+        admin_force_channel_mode[admin_id] = False
+        await message.reply(f"✅ Kanal qo‘shildi: {text}")
+
+    elif admin_delete_channel_mode.get(admin_id):
+        if text.isdigit():
+            ch_id = int(text)
+            async with aiosqlite.connect(DB) as db:
+                await db.execute("DELETE FROM force_channels WHERE id = ?", (ch_id,))
+                await db.commit()
+            admin_delete_channel_mode[admin_id] = False
+            await message.reply("✅ Kanal o‘chirildi.")
+        else:
+            await message.reply("❗ Faqat raqam yuboring.")
+
+# === USERNAME HANDLER ===
+@dp.message_handler()
+async def handle_username(message: types.Message):
+    status = await get_setting("battle_status")
+    if status != "on":
+        await message.reply("⏸ Hozircha battle yopiq.")
+        return
+
+    text = message.text.strip()
+    user = message.from_user
+
+    if not USERNAME_REGEX.match(text):
+        await message.reply(INVALID_FORMAT)
+        return
+
+    if not user.username:
+        await message.reply("Sizning Telegram akkauntingizda username mavjud emas. Avval @username qo‘shing.")
+        return
+
+    provided = text
+    expected = "@" + user.username
+    if provided.lower() != expected.lower():
+        await message.reply(NOT_YOUR_USERNAME.format(real=quote_html(expected)), parse_mode=ParseMode.HTML)
+        return
+
+    # === Multiple force channels check ===
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute("SELECT channel_name FROM force_channels") as cur:
+            channels = await cur.fetchall()
+
+    for ch in channels:
+        channel_name = ch[0]
+        try:
+            chat_arg = channel_name
+            if channel_name.startswith("-"):
+                try:
+                    chat_arg = int(channel_name)
+                except Exception:
+                    chat_arg = channel_name
+            member = await bot.get_chat_member(chat_arg, user.id)
+            if member.status not in ("member", "administrator", "creator"):
+                invite_link = f"https://t.me/{channel_name.lstrip('@')}" if channel_name.startswith("@") else channel_name
+                await message.reply(f"📢 Battle’da qatnashish uchun quyidagi kanalga a'zo bo'ling:\n{invite_link}")
+                return
+        except Exception as e:
+            logging.warning(f"Force channel check error: {e}")
+            await message.reply("⚠️ Kanal obuna tekshiruvida xato yuz berdi.")
+            return
+
+    number = await register_user(user.id, provided.lower())
+    if not number:
+        await message.reply("Ro'yxatga olishda xatolik yuz berdi.")
+        return
+
+    stars = 5
+    reaction = 1
+    boost = 15
+    template = await get_setting("template") or DEFAULT_CHANNEL_TEMPLATE
+
+    try:
+        channel_msg = template.format(
+            num=quote_html(str(number)),
+            username=quote_html(provided),
+            stars=quote_html(str(stars)),
+            reaction=quote_html(str(reaction)),
+            boost=quote_html(str(boost)),
+            boost_link=quote_html(BOOST_LINK)
+        )
+        await bot.send_message(CHANNEL_ID, channel_msg, parse_mode=ParseMode.HTML)
+    except Exception:
+        logging.exception("Channel post failed")
+        await message.reply("✅ Username ro'yxatga olindi, lekin kanalga yuborilmadi.")
+        return
+
+    await message.reply(SUCCESS_REPLY.format(number=number, channel=CHANNEL_ID))
+
+# === RUN ===
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
